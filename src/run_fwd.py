@@ -11,6 +11,9 @@ import forward
 import utils
 import models
 
+import tifffile as tif
+import numpy as np
+
 
 def main(noeval, **args):
 
@@ -45,7 +48,7 @@ def fill_params(expt_name, chkpt_num, gpus,
 
     #Model params
     params["in_dim"]      = 1
-    params["output_spec"] = collections.OrderedDict(psd_label=1)
+    params["output_spec"] = collections.OrderedDict(soma_label=1)
     params["depth"]       = 4
     params["batch_norm"]  = not(nobn)
     params["activation"]  = F.sigmoid
@@ -64,12 +67,13 @@ def fill_params(expt_name, chkpt_num, gpus,
     params["output_tag"]  = tag
 
     #Dataset params
-    params["data_dir"]    = os.path.expanduser(
-                            "~/seungmount/research/Nick/datasets/SNEMI3D/")
+    # params["data_dir"]    = os.path.expanduser(
+    #                         "~/seungmount/research/Nick/datasets/CSHL_GAD/")
+    params["data_dir"] = "/home/gornet/Data/training-dataset/"
     assert os.path.isdir(params["data_dir"]),"nonexistent data directory"
     params["dsets"]       = dset_names
-    params["input_spec"]  = collections.OrderedDict(input=(18,160,160)) #dp dataset spec
-    params["scan_spec"]   = collections.OrderedDict(psd=(1,18,160,160))
+    params["input_spec"]  = collections.OrderedDict(input=(10,128,128)) # (18, 160, 160)#dp dataset spec
+    params["scan_spec"]   = collections.OrderedDict(psd=(1,10,128,128)) # (1, 18, 160, 160)
     params["scan_params"] = dict(stride=(0.5,0.5,0.5), blend="bump")
 
     #Use-specific Module imports
@@ -83,7 +87,8 @@ def fill_params(expt_name, chkpt_num, gpus,
     params["model_kwargs"] = { "bn" : params["batch_norm"] }
 
     #Modules used for record-keeping
-    params["modules_used"] = [__file__, model_module.__file__, "layers.py"]
+    # params["modules_used"] = [__file__, model_module.__file__, "layers.py"]
+    params["modules_used"] = [__file__, model_module.__file__]
 
     return params
 
@@ -93,8 +98,9 @@ def make_forward_scanner(dset_name, data_dir, input_spec,
     """ Creates a DataProvider ForwardScanner from a dset name """
 
     # Reading EM image
-    img = utils.read_h5(os.path.join(data_dir, dset_name + "_img.h5"))
-    img = (img / 255.).astype("float32")
+    img = utils.read_h5(os.path.join(data_dir, dset_name + ".h5"))
+    # img = tif.imread("/data/gornet/unet-training/GADH2DGFP_substack.tif")
+    img = img.astype("float32") / float(np.max(img))
 
     # Creating DataProvider Dataset
     vd = dp.VolumeDataset()
