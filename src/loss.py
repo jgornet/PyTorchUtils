@@ -12,6 +12,9 @@ import numpy as np
 from scipy.ndimage.measurements import label
 from torch.autograd import Variable
 import torch.nn.functional as F
+from math import exp
+from scipy.ndimage.filters import maximum_filter, minimum_filter
+import sys
 
 class BinomialCrossEntropyWithLogits(nn.Module):
     """ 
@@ -252,3 +255,129 @@ class SimpleMSE(nn.Module):
             return True
 
         return False
+
+
+class TopologyWarpingBCE(nn.Module):
+    """
+    Weights topological errors by warping the segmentation onto the ground-truth
+    """
+    def __init__(self):
+        nn.Module.__init__(self)
+        self.bce = nn.BCEWithLogitsLoss()
+        self.iteration = 1
+
+    def forward(self, pred, label, mask=None):
+        sig = 1/(1+exp(-self.iteration/5000+2.3))
+        weight = self.weight_topological_errors(pred, label,
+                                                weight=sig*10)
+        err = - Variable(weight) * (label * -(1 + (-pred).exp()).log() +
+                                      (1 - label) * -(1 + pred.exp()).log())
+
+        cost = err.sum()
+
+        self.iteration += 1
+
+        return cost
+
+    def weight_topological_errors(self, pred, label, weight=5):
+        if self.iteration < 600:
+            return torch.ones(pred.size()).cuda(0)
+
+        iterations = int(max(3, 7*(1-1/(1+exp(-self.iteration/5000+3)))))
+
+        _pred = pred.cpu()
+        _pred = _pred.data.numpy() > 0.5
+        _label = label.cpu()
+        _label = _label.data.numpy() > 0.5
+
+        topological_errors = np.zeros(_pred.shape)
+
+        for i in range(_pred.shape[0]):
+            warping = self.warp(_pred[i][0], _label[i][0],
+                                iterations=iterations)
+            # topological_errors[i][0] = np.bitwise_and(np.bitwise_not(warping),
+            #                                           _label[i][0])
+            topological_errors[i][0] = np.bitwise_xor(warping, _label[i][0])
+
+        topological_errors = torch.from_numpy(topological_errors.astype(np.float32)).cuda(0)
+
+        return (weight-1)*topological_errors + torch.ones(pred.size()).cuda(0)
+
+    def warp(self, prediction, gt, iterations=1):
+        # Make sure both the prediction and ground-truth are binary
+        _gt = np.pad(gt > 0.5, pad_width=((1,)), mode='constant').copy().astype(np.uint8)
+        _prediction = np.pad(prediction > 0.5,
+                            pad_width=((1,)),
+                            mode='constant').copy().astype(np.uint8)
+
+        # Get dilated points by max filtering the segmentation
+        dilation = maximum_filter(_prediction, size=(3, 3, 3))
+        result = np.bitwise_and(dilation, np.bitwise_not(_prediction))
+
+        # Warp simple dilated points onto the ground-truth
+        voxel_list = np.nonzero(np.bitwise_and(result, _gt))
+        warping = _prediction.copy()
+
+        for z, y, x in zip(*voxel_list):
+            neighborhood = warping[z-1:z+2, y-1:y+2, x-1:x+2].copy()
+            neighborhood[1, 1, 1] = 1
+            if self._is_simple_point(neighborhood):
+                warping[z, y, x] = 1
+
+        # Get eroded points by min filtering the segmentation
+        erosion = minimum_filter(_prediction, size=(3, 3, 3))
+        result = np.bitwise_and(_prediction, np.bitwise_not(erosion))
+
+        # Warp simple eroded points onto the ground-truth
+        voxel_list = np.nonzero(np.bitwise_and(result, np.bitwise_not(_gt)))
+
+        for z, y, x in zip(*voxel_list):
+            neighborhood = _prediction[z-1:z+2, y-1:y+2, x-1:x+2].copy()
+            threshold = neighborhood[1, 1, 1]
+            if self._is_simple_point(neighborhood):
+                warping[z, y, x] = 0
+
+        if iterations > 1:
+            iterations += -1
+            return self.warp(warping[1:-1, 1:-1, 1:-1] > 0, gt, iterations=iterations)
+        else:
+            return warping[1:-1, 1:-1, 1:-1] > 0
+
+    def _is_simple_point(self, neighborhood):
+        if np.sum(neighborhood) == 0:
+            return False
+
+        # Setup neighborhood
+        result = np.copy(neighborhood)
+        threshold = result[1, 1, 1]
+
+        # Create 18-neighborhood structure
+        s = np.zeros((3, 3, 3))
+        s[0, :, :] = np.array([[0, 1, 0],
+                            [1, 1, 1],
+                            [0, 1, 0]])
+        s[1, :, :] = np.array([[1, 1, 1],
+                            [1, 1, 1],
+                            [1, 1, 1]])
+        s[2, :, :] = np.array([[0, 1, 0],
+                            [1, 1, 1],
+                            [0, 1, 0]])
+
+        # Calculates the topological number of the cavity
+        result[result == 0] = -1
+        labeled_array, num_features = label(result != threshold,
+                                            structure=s)
+
+        if num_features != 1:
+            return False
+
+        # Calculates the topological number of the component
+        result = (result == threshold)
+        result[1, 1, 1] = 0
+        labeled_array, num_features = label(result,
+                                            structure=np.ones((3, 3, 3)))
+
+        if num_features != 1:
+            return False
+
+        return True

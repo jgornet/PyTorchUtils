@@ -65,7 +65,7 @@ def fill_params(expt_name, chkpt_num, batch_sz, gpus,
 
     #Sampling params
     # params["data_dir"]     = os.path.expanduser("~/seungmount/research/Nick/datasets/CSHL_GAD/")
-    params["data_dir"] = "/home/gornet/Data/training-dataset"
+    params["data_dir"] = "/home/gornet/Data/OLST"
     assert os.path.isdir(params["data_dir"]),"nonexistent data directory"
     params["train_sets"]   = ["train"]
     params["val_sets"]     = ["val"]
@@ -123,7 +123,7 @@ def start_training(model_class, model_args, model_kwargs, sampler_class,
     val_sampler   = utils.AsyncSampler(sampler_class(data_dir, dsets=val_sets,
                                                      mode="val"))
 
-    loss_fn = loss.SimpleBinomialCrossEntropyWithLogits()
+    loss_fn = loss.TopologyWarpingBCE()
     optimizer = torch.optim.Adam(net.parameters(), lr=lr)
 
     train.train(net, loss_fn, optimizer, train_sampler, val_sampler,
